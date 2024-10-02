@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Move Car between Points</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  
+  <!-- Leaflet Routing Machine CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    #map {
+      flex: 1;
+    }
+    #controls {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      padding: 10px;
+      background-color: #f9f9f9;
+      box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.1);
+    }
+    #speedControl {
+      width: 50vw;
+    }
+    label {
+      margin-right: 10px;
+    }
+    button {
+      margin-left: 10px;
+      padding: 5px 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Main Content Area -->
+  <div id="map"></div>
+
+  <!-- Speed Control -->
+  <div id="controls">
+    <label for="speedControl">Speed Control: </label>
+    <input type="range" id="speedControl" min="0" max="100" value="50" step="1" />
+    <span id="speedValue">1:30 minutes</span>
+    <button id="pauseBtn">Pause</button>
+    <button id="resumeBtn" disabled>Resume</button>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+
+  <!-- Leaflet Routing Machine JS -->
+  <script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+  <script>
+    // Create the map and set the initial view
+    const map = L.map('map').setView([<%= startLatLng[0] %>, <%= startLatLng[1] %>], 8); // Center on the start point
+
+    // Add the OpenStreetMap tiles
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Define the start and end points from EJS template data
+    const startLatLng = [<%= startLatLng[0] %>, <%= startLatLng[1] %>]; // Start point from server-side data
+    const endLatLng = [<%= endLatLng[0] %>, <%= endLatLng[1] %>];   // End point from server-side data
+
+    // Add markers for the start and end points
+    const startMarker = L.marker(startLatLng).addTo(map).bindPopup("Start Point");
+    const endMarker = L.marker(endLatLng).addTo(map).bindPopup("End Point");
+
+    // Custom car icon for the marker
+    const carIcon = L.icon({
+      iconUrl: '/images/car.png',
+      iconSize: [50, 50], // size of the icon
+      iconAnchor: [25, 25], // point of the icon which will correspond to marker's location
+      popupAnchor: [0, -25]  // point from which the popup should open relative to the iconAnchor
+    });
+
+    // Add a moving marker with a car icon
+    const movingMarker = L.marker(startLatLng, {icon: carIcon}).addTo(map).bindPopup("Moving Car");
+
+    // Speed settings
+    let speedFactor = 1; // Start with 1 (1:30 minutes)
+    const baseDuration = 90000; // Base duration of 1:30 minutes (90,000 ms)
+    let totalDuration = baseDuration / speedFactor;  // Total duration in milliseconds
+    let elapsedTime = 0;  // Track elapsed time
+    let animationFrame;   // For requestAnimationFrame
+    let paused = false;   // To track if paused
+    let lastIndex = 0;    // Track the last index of the route coordinates
+    let startTime = null; // Store the start time
+    let route;            // Store the route for later use
+    let remainingTime = totalDuration;  // Store the remaining time left
+
+    // Function to update the car's position along the route
+    function animateCar(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const deltaTime = timestamp - startTime;
+      elapsedTime += deltaTime * speedFactor;
+      startTime = timestamp;
+
+      if (paused) return; // Don't update when paused
+
+      // Calculate the progress of the animation
+      const t = Math.min(elapsedTime / totalDuration, 1);
+
+      // Get the new car position from the route coordinates
+      const index = Math.floor(t * route.coordinates.length);
+      lastIndex = index;  // Update the last known index
+      movingMarker.setLatLng(route.coordinates[index]);
+
+      if (t < 1) {
+        animationFrame = requestAnimationFrame(animateCar);
+      }
+    }
+
+    // Use Leaflet Routing Machine to create a route between the two points
+    const routeControl = L.Routing.control({
+      waypoints: [
+        L.latLng(startLatLng),
+        L.latLng(endLatLng)
+      ],
+      routeWhileDragging: false,
+      addWaypoints: false,
+      draggableWaypoints: false,
+      show: false,
+      createMarker: () => null,  // Hide intermediate markers
+    }).addTo(map);
+
+    // Once the route is ready, start the animation
+    routeControl.on('routesfound', function(e) {
+      route = e.routes[0];
+      requestAnimationFrame(animateCar);
+    });
+
+    // Event listener for speed control slider (real-time update)
+    document.getElementById('speedControl').addEventListener('input', function() {
+      // Get new speed factor from the slider (ranges from 0 to 100)
+      const speedRange = this.value;
+
+      // Map the range 0-100 to a speedFactor that controls the time from 1:30 to 30 seconds
+      const newSpeedFactor = 0.5 + (speedRange / 100) * 1.5; // Speed range from 0.5 to 2 (90 seconds to 30 seconds)
+
+      // Adjust the total duration based on the new speed factor
+      const currentProgress = elapsedTime / totalDuration;  // Get current progress before changing speed
+
+      // Update the remaining time
+      remainingTime = (1 - currentProgress) * totalDuration;
+      totalDuration = baseDuration / newSpeedFactor;  // Update duration based on new speed
+
+      // Recalculate elapsed time based on the remaining time and new speed factor
+      elapsedTime = currentProgress * totalDuration;
+
+      speedFactor = newSpeedFactor;
+
+      // Update the displayed speed (in seconds or minutes)
+      const newTime = (90 / newSpeedFactor).toFixed(0);
+      document.getElementById('speedValue').textContent = `${newTime} seconds`;
+    });
+
+    // Pause button functionality
+    document.getElementById('pauseBtn').addEventListener('click', function() {
+      paused = true;
+      document.getElementById('pauseBtn').disabled = true;
+      document.getElementById('resumeBtn').disabled = false;
+      cancelAnimationFrame(animationFrame); // Stop the animation
+    });
+
+    // Resume button functionality
+    document.getElementById('resumeBtn').addEventListener('click', function() {
+      paused = false;
+      document.getElementById('pauseBtn').disabled = false;
+      document.getElementById('resumeBtn').disabled = true;
+
+      // Resume the animation from the last known index
+      startTime = null; // Reset the start time for requestAnimationFrame
+      requestAnimationFrame(animateCar);
+    });
+  </script>
+
+</body>
+</html>
